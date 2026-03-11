@@ -1,0 +1,26 @@
+Arduino to Breadboard
+5V to Positive Rail
+GND to Negative Rail
+
+LED Display
+GND - Breadboard Negative
+VCC - Breadboard Positive
+SDA - Analog Pin A4
+SCL - Analog Pin A5
+
+Water Level Sensor
+S - Analog Pin A0
++ - Breadboard Positive
+- - Breadboard Negative
+
+Servo Motor
+Red - Breadboard Positive
+Orange - Digital Pin 4
+Brown - Breadboard Negative
+
+Stepper Motor via Driver Module (must be powered in a external power supply)
+
+IN1 - Digital Pin 9
+IN2 - Digital Pin 10
+IN3 - Digital Pin 11
+IN4 - Digital Pin 12

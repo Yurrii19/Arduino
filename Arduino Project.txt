@@ -1,0 +1,17 @@
+Title:
+HydroSense: Arduino-Based Automated Sink Declogging System
+
+Components:
+Arduino Uno
+Servo Motor
+Stepper Motor
+Water Level Motor
+
+Steps:
+1. A water level sensor is installed on the side of the sink. When the water stays above the set point for 3 minutes, the system automatically activates.
+
+2. A container at the top holds colored water for demonstration purposes (replacing liquid sosa). A 180° servo motor opens to release the liquid onto the clog area.
+
+3. A stepper motor at the sink drain activates to open the pathway, allowing the liquid to reach and clear the clog.
+
+4. After the process completes, all motors stop. 
