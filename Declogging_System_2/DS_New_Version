@@ -1,338 +1,148 @@
-/*
- * ============================================================
- *  ClogSense: Arduino Based Automated Kitchen Sink Declogging System
- * ============================================================
- */
-
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <Servo.h>
+#include <Stepper.h>
 
-// ===== Pins =====
-const int sensorPin = 2;
-const int servoPin  = 6;
-
-#define STEPPER_PIN_1  9
-#define STEPPER_PIN_2  10
-#define STEPPER_PIN_3  11
-#define STEPPER_PIN_4  12
-
-// ===== Components =====
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 Servo myServo;
 
-// ===== State Machine =====
-enum SystemState {
-  READY,
-  WATER_CONFIRM,
-  SERVO_ACTIVE,
-  STEPPER_ACTIVE,
-  CHECK_WATER,
-  COMPLETE
-};
+const int stepsPerRevolution = 2048; 
+Stepper myStepper(stepsPerRevolution, 9, 11, 10, 12); 
+
+const int sensorPin = 2, servoPin = 6;
+enum SystemState { READY, WATER_CONFIRM, SERVO_RELEASE, REACTION_WAIT, STEPPER_ACTIVE, CHECK_WATER, COMPLETE, SEVERE_CLOG };
 SystemState currentState = READY;
 
-// ===== Timing =====
-unsigned long confirmStart      = 0;
-unsigned long timerStart        = 0;
-unsigned long lastStepperMillis = 0;
-unsigned long lcdUpdateMillis   = 0;
-
-// 10 seconds for testing
-const unsigned long confirmTime = 10000UL;
-
-// REAL VALUE (3 minutes)
-// const unsigned long confirmTime = 180000UL;
-
-const unsigned long servoDuration = 5000;
-const unsigned long stepInterval  = 2;
-const unsigned long checkPause    = 3000;
-
-// ===== Stepper =====
-int step_number = 0;
-int stepCycles  = 0;
-const int stepsPerCycle = 600;
-
-// ===== Cycle counter =====
+unsigned long confirmStart, timerStart;
+const unsigned long confirmTime = 3000, servoDuration = 3000, reactionTime = 10000, cleaningDuration = 20000, checkPause = 3000; 
 int declogCycles = 0;
+const int MAX_CYCLES = 3;
 
+void stopStepper() {
+  digitalWrite(9, LOW); digitalWrite(10, LOW); digitalWrite(11, LOW); digitalWrite(12, LOW);
+}
 
-// ============================================================
-// WATER SENSOR FILTER
-// ============================================================
+void lcdMessage(const char* l1, const char* l2) {
+  lcd.clear(); lcd.setCursor(0, 0); lcd.print(l1); lcd.setCursor(0, 1); lcd.print(l2);
+}
 
 bool readWaterSensor() {
-
   int waterCount = 0;
-
-  for(int i=0;i<15;i++) {
-
-    if(digitalRead(sensorPin) == LOW) { // LOW = water detected
-      waterCount++;
-    }
-
-    delay(2);
-  }
-
-  if(waterCount >= 12) {
-    return true;   // water stable
-  } else {
-    return false;  // noise or no water
-  }
-
+  for (int i = 0; i < 15; i++) { if (digitalRead(sensorPin) == HIGH) waterCount++; delay(2); }
+  return (waterCount >= 12);
 }
-
-
-// ============================================================
-// STEPPER
-// ============================================================
-
-void OneStep(bool dir) {
-
-  if (dir) {
-
-    switch (step_number) {
-      case 0: digitalWrite(STEPPER_PIN_1,HIGH); digitalWrite(STEPPER_PIN_2,LOW);  digitalWrite(STEPPER_PIN_3,LOW);  digitalWrite(STEPPER_PIN_4,LOW);  break;
-      case 1: digitalWrite(STEPPER_PIN_1,LOW);  digitalWrite(STEPPER_PIN_2,HIGH); digitalWrite(STEPPER_PIN_3,LOW);  digitalWrite(STEPPER_PIN_4,LOW);  break;
-      case 2: digitalWrite(STEPPER_PIN_1,LOW);  digitalWrite(STEPPER_PIN_2,LOW);  digitalWrite(STEPPER_PIN_3,HIGH); digitalWrite(STEPPER_PIN_4,LOW);  break;
-      case 3: digitalWrite(STEPPER_PIN_1,LOW);  digitalWrite(STEPPER_PIN_2,LOW);  digitalWrite(STEPPER_PIN_3,LOW);  digitalWrite(STEPPER_PIN_4,HIGH); break;
-    }
-
-  } else {
-
-    switch (step_number) {
-      case 0: digitalWrite(STEPPER_PIN_1,LOW);  digitalWrite(STEPPER_PIN_2,LOW);  digitalWrite(STEPPER_PIN_3,LOW);  digitalWrite(STEPPER_PIN_4,HIGH); break;
-      case 1: digitalWrite(STEPPER_PIN_1,LOW);  digitalWrite(STEPPER_PIN_2,LOW);  digitalWrite(STEPPER_PIN_3,HIGH); digitalWrite(STEPPER_PIN_4,LOW);  break;
-      case 2: digitalWrite(STEPPER_PIN_1,LOW);  digitalWrite(STEPPER_PIN_2,HIGH); digitalWrite(STEPPER_PIN_3,LOW);  digitalWrite(STEPPER_PIN_4,LOW);  break;
-      case 3: digitalWrite(STEPPER_PIN_1,HIGH); digitalWrite(STEPPER_PIN_2,LOW);  digitalWrite(STEPPER_PIN_3,LOW);  digitalWrite(STEPPER_PIN_4,LOW);  break;
-    }
-
-  }
-
-  step_number++;
-  if(step_number > 3) step_number = 0;
-
-}
-
-void stepperOff() {
-
-  digitalWrite(STEPPER_PIN_1, LOW);
-  digitalWrite(STEPPER_PIN_2, LOW);
-  digitalWrite(STEPPER_PIN_3, LOW);
-  digitalWrite(STEPPER_PIN_4, LOW);
-
-}
-
-
-// ============================================================
-
-void lcdPrint(const char* l1,const char* l2) {
-
-  lcd.setCursor(0,0);
-  lcd.print(l1);
-
-  lcd.setCursor(0,1);
-  lcd.print(l2);
-
-}
-
-
-// ============================================================
 
 void setup() {
-
-  Serial.begin(9600);
-
   pinMode(sensorPin, INPUT_PULLUP);
-
-  pinMode(STEPPER_PIN_1, OUTPUT);
-  pinMode(STEPPER_PIN_2, OUTPUT);
-  pinMode(STEPPER_PIN_3, OUTPUT);
-  pinMode(STEPPER_PIN_4, OUTPUT);
-
+  pinMode(9, OUTPUT); pinMode(10, OUTPUT); pinMode(11, OUTPUT); pinMode(12, OUTPUT);
   myServo.attach(servoPin);
   myServo.write(0);
-
-  stepperOff();
-
+  myStepper.setSpeed(18); 
   lcd.init();
   lcd.backlight();
-
-  lcdPrint("  ClogSense v1  ","  Monitoring... ");
-
+  lcdMessage("ClogSense System", "Monitoring...");
+  stopStepper();
 }
 
-
-// ============================================================
-
 void loop() {
-
-  bool waterPresent = readWaterSensor();   // ← STABLE SENSOR
+  bool waterPresent = readWaterSensor();
   unsigned long now = millis();
 
-  switch(currentState) {
-
+  switch (currentState) {
     case READY:
-
-      confirmStart = 0;
       declogCycles = 0;
-
-      if(waterPresent) {
-
-        confirmStart = now;
-        currentState = WATER_CONFIRM;
-
-        lcdPrint("Water Detected! ","Confirming...   ");
+      if (waterPresent) { 
+        confirmStart = now; 
+        currentState = WATER_CONFIRM; 
+        lcdMessage("Water detected", "Confirming..."); 
       }
-
-    break;
-
-
+      break;
 
     case WATER_CONFIRM:
-
-      if(waterPresent) {
-
-        if(now - lcdUpdateMillis >= 1000) {
-
-          lcdUpdateMillis = now;
-
-          unsigned long elapsed = now - confirmStart;
-          unsigned long remaining = (confirmTime > elapsed) ? (confirmTime - elapsed)/1000 : 0;
-
-          lcd.setCursor(0,0);
-          lcd.print("Water Detected! ");
-
-          lcd.setCursor(0,1);
-          lcd.print("Trigger in:");
-          lcd.print(remaining);
-          lcd.print("s  ");
-        }
-
-        if(now - confirmStart >= confirmTime) {
-
-          declogCycles = 1;
-
-          timerStart = now;
-          myServo.write(180);
-
-          currentState = SERVO_ACTIVE;
-
-          lcdPrint("Cycle #1 Start  ","Releasing Liquid");
-
-        }
-
+      if (!waterPresent) { currentState = READY; lcdMessage("Water gone", "Monitoring"); break; }
+      if (now - confirmStart >= confirmTime) {
+        stopStepper();       // Kill stepper power
+        delay(100);          // Let voltage stabilize
+        
+        myServo.attach(servoPin); // WAKE UP SERVO
+        myServo.write(180);       // MOVE
+        
+        declogCycles = 1; 
+        timerStart = now;
+        currentState = SERVO_RELEASE;
+        lcdMessage("Cycle #1", "Releasing Sosa");
       }
-      else {
+      break;
 
-        currentState = READY;
-
-        lcdPrint("  ClogSense v1  ","  Monitoring... ");
-
+    case SERVO_RELEASE:
+      if (now - timerStart >= servoDuration) {
+        myServo.write(0);    // MOVE BACK
+        delay(600);          // Wait for it to physically reach 0
+        myServo.detach();    // GO TO SLEEP (Stops vibration)
+        
+        timerStart = now;
+        currentState = REACTION_WAIT;
+        lcdMessage("Sosa reacting", "Please wait");
       }
+      break;
 
-    break;
-
-
-
-    case SERVO_ACTIVE:
-
-      if(now - timerStart >= servoDuration) {
-
-        myServo.write(0);
-
-        stepCycles = 0;
-        step_number = 0;
-
-        lastStepperMillis = now;
-
+    case REACTION_WAIT:
+      if (now - timerStart >= reactionTime) {
         currentState = STEPPER_ACTIVE;
-
-        lcdPrint("Stepper Active  ","Clearing Clog   ");
-
       }
-
-    break;
-
-
+      break;
 
     case STEPPER_ACTIVE:
-
-      if(now - lastStepperMillis >= stepInterval) {
-
-        OneStep(true);
-
-        lastStepperMillis = now;
-        stepCycles++;
-
-        if(stepCycles >= stepsPerCycle) {
-
-          stepperOff();
-
-          timerStart = now;
-
-          currentState = CHECK_WATER;
-
-          lcdPrint("Checking water..","Please wait...  ");
-
+      { // Brackets are REQUIRED here to fix the scope issue
+        lcdMessage("Step 1: Spin", "20s Action...");
+        unsigned long startCleaning = millis();
+        while (millis() - startCleaning < cleaningDuration) {
+          myStepper.step(20); // Move in chunks
         }
-
+        stopStepper();
+        timerStart = millis(); // Reset timer for the checkPause
+        currentState = CHECK_WATER;
       }
-
-    break;
-
-
+      break;
 
     case CHECK_WATER:
-
-      if(now - timerStart >= checkPause) {
-
-        if(waterPresent) {
-
-          declogCycles++;
-
-          timerStart = now;
-
-          myServo.write(180);
-
-          currentState = SERVO_ACTIVE;
-
-          lcd.setCursor(0,0);
-          lcd.print("Still Clogged!  ");
-
-          lcd.setCursor(0,1);
-          lcd.print("Cycle #");
-          lcd.print(declogCycles);
-
-        }
-
-        else {
-
-          currentState = COMPLETE;
-
-          lcdPrint("Drain Cleared!  ","Process Complete");
-
-        }
-
+      // 1. If water is finally gone, we are done
+      if (!waterPresent) { 
+        currentState = COMPLETE; 
+        break; 
       }
+      
+      // 2. If water is STILL there, wait for checkPause (3s) then repeat or fail
+      if (now - timerStart < checkPause) {
+        // Show a countdown so you know it's not "stuck"
+        lcd.setCursor(0, 0); lcd.print("Still Clogged   ");
+        lcd.setCursor(0, 1); lcd.print("Retry in: ");
+        lcd.print((checkPause - (now - timerStart)) / 1000);
+        lcd.print("s ");
+      } else {
+        declogCycles++;
+        if (declogCycles > MAX_CYCLES) {
+          currentState = SEVERE_CLOG;
+        } else {
+          currentState = STEPPER_ACTIVE; // Go back to spinning
+        }
+      }
+      break;
 
-    break;
+    case COMPLETE: 
+      lcdMessage("Drain cleared!", "SUCCESS");
+      stopStepper(); 
+      delay(5000); 
+      myServo.write(0); 
+      currentState = READY; 
+      break;
 
-
-
-    case COMPLETE:
-
-      stepperOff();
-      myServo.write(0);
-
-      delay(5000);
-
-      currentState = READY;
-
-      lcdPrint("  ClogSense v1  ","  Monitoring... ");
-
-    break;
-
+    case SEVERE_CLOG: 
+      lcdMessage("SEVERE CLOG", "Manual Clean!");
+      stopStepper(); 
+      delay(10000); 
+      myServo.write(0); 
+      currentState = READY; 
+      break;
   }
-
 }
