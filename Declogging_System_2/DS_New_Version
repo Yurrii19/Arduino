@@ -9,7 +9,14 @@ Servo myServo;
 const int stepsPerRevolution = 2048; 
 Stepper myStepper(stepsPerRevolution, 9, 11, 10, 12); 
 
-const int sensorPin = 2, servoPin = 6;
+// ANALOG PIN A0 para sa Water Sensor
+const int sensorPin = A0; 
+const int servoPin = 6;
+
+// SENSITIVITY: 500 ang threshold. 
+// Kung masyadong sensitive pa rin sa moist, itaas mo sa 600.
+const int waterThreshold = 500; 
+
 enum SystemState { READY, WATER_CONFIRM, SERVO_RELEASE, REACTION_WAIT, STEPPER_ACTIVE, CHECK_WATER, COMPLETE, SEVERE_CLOG };
 SystemState currentState = READY;
 
@@ -26,21 +33,25 @@ void lcdMessage(const char* l1, const char* l2) {
   lcd.clear(); lcd.setCursor(0, 0); lcd.print(l1); lcd.setCursor(0, 1); lcd.print(l2);
 }
 
+// UPDATED: Analog reading para iwas ghost detection
 bool readWaterSensor() {
-  int waterCount = 0;
-  for (int i = 0; i < 15; i++) { if (digitalRead(sensorPin) == HIGH) waterCount++; delay(2); }
-  return (waterCount >= 12);
+  int val = analogRead(sensorPin); 
+  return (val > waterThreshold); 
 }
 
 void setup() {
-  pinMode(sensorPin, INPUT_PULLUP);
+  // Tinanggal ang INPUT_PULLUP dahil Analog na tayo
   pinMode(9, OUTPUT); pinMode(10, OUTPUT); pinMode(11, OUTPUT); pinMode(12, OUTPUT);
+  
   myServo.attach(servoPin);
   myServo.write(0);
+  
   myStepper.setSpeed(18); 
+  
   lcd.init();
   lcd.backlight();
   lcdMessage("ClogSense System", "Monitoring...");
+  
   stopStepper();
 }
 
@@ -61,11 +72,11 @@ void loop() {
     case WATER_CONFIRM:
       if (!waterPresent) { currentState = READY; lcdMessage("Water gone", "Monitoring"); break; }
       if (now - confirmStart >= confirmTime) {
-        stopStepper();       // Kill stepper power
-        delay(100);          // Let voltage stabilize
+        stopStepper();
+        delay(100);
         
-        myServo.attach(servoPin); // WAKE UP SERVO
-        myServo.write(180);       // MOVE
+        myServo.attach(servoPin);
+        myServo.write(180); // Open Sosa dispenser
         
         declogCycles = 1; 
         timerStart = now;
@@ -76,9 +87,9 @@ void loop() {
 
     case SERVO_RELEASE:
       if (now - timerStart >= servoDuration) {
-        myServo.write(0);    // MOVE BACK
-        delay(600);          // Wait for it to physically reach 0
-        myServo.detach();    // GO TO SLEEP (Stops vibration)
+        myServo.write(0); // Close dispenser
+        delay(600);
+        myServo.detach(); // Stop servo vibration
         
         timerStart = now;
         currentState = REACTION_WAIT;
@@ -93,28 +104,25 @@ void loop() {
       break;
 
     case STEPPER_ACTIVE:
-      { // Brackets are REQUIRED here to fix the scope issue
+      {
         lcdMessage("Step 1: Spin", "20s Action...");
         unsigned long startCleaning = millis();
         while (millis() - startCleaning < cleaningDuration) {
-          myStepper.step(20); // Move in chunks
+          myStepper.step(20); 
         }
         stopStepper();
-        timerStart = millis(); // Reset timer for the checkPause
+        timerStart = millis();
         currentState = CHECK_WATER;
       }
       break;
 
     case CHECK_WATER:
-      // 1. If water is finally gone, we are done
       if (!waterPresent) { 
         currentState = COMPLETE; 
         break; 
       }
       
-      // 2. If water is STILL there, wait for checkPause (3s) then repeat or fail
       if (now - timerStart < checkPause) {
-        // Show a countdown so you know it's not "stuck"
         lcd.setCursor(0, 0); lcd.print("Still Clogged   ");
         lcd.setCursor(0, 1); lcd.print("Retry in: ");
         lcd.print((checkPause - (now - timerStart)) / 1000);
@@ -124,7 +132,10 @@ void loop() {
         if (declogCycles > MAX_CYCLES) {
           currentState = SEVERE_CLOG;
         } else {
-          currentState = STEPPER_ACTIVE; // Go back to spinning
+          // Ipakita ang bagong cycle number sa LCD
+          String cycleLabel = "Cycle #" + String(declogCycles);
+          lcdMessage(cycleLabel.c_str(), "Re-spinning...");
+          currentState = STEPPER_ACTIVE;
         }
       }
       break;
@@ -133,16 +144,16 @@ void loop() {
       lcdMessage("Drain cleared!", "SUCCESS");
       stopStepper(); 
       delay(5000); 
-      myServo.write(0); 
       currentState = READY; 
+      lcdMessage("ClogSense System", "Monitoring...");
       break;
 
     case SEVERE_CLOG: 
       lcdMessage("SEVERE CLOG", "Manual Clean!");
       stopStepper(); 
       delay(10000); 
-      myServo.write(0); 
       currentState = READY; 
+      lcdMessage("ClogSense System", "Monitoring...");
       break;
   }
 }
